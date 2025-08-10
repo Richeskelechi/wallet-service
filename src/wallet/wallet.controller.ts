@@ -4,6 +4,8 @@ import { WalletService } from './wallet.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { DepositDto } from './dto/deposit.dto';
 import { WithdrawDto } from './dto/withdraw.dto';
+import { TransferDto } from './dto/transfer.dto';
+import { sendSuccess } from '../utils/helpers/response.helpers';
 
 @ApiTags('wallets')
 @Controller('wallets')
@@ -12,19 +14,29 @@ export class WalletController {
 
   @Post()
   @ApiOperation({ summary: 'Create a new wallet' })
-  createWallet(@Body() dto: CreateWalletDto) {
-    return this.walletService.createWallet(dto);
+  async createWallet(@Body() dto: CreateWalletDto) {
+    const data = await this.walletService.createWallet(dto);
+    return sendSuccess(data, 'Wallet created successfully');
   }
 
   @Post(':id/deposit')
   @ApiOperation({ summary: 'Deposit funds into a wallet' })
-  deposit(@Param('id') id: string, @Body() dto: DepositDto) {
-    return this.walletService.deposit(id, dto);
+  async deposit(@Param('id') id: string, @Body() dto: DepositDto) {
+    const data = await this.walletService.deposit(id, dto);
+    return sendSuccess(data, 'Deposit successful');
   }
 
   @Post(':id/withdraw')
   @ApiOperation({ summary: 'Withdraw funds from a wallet' })
-  withdraw(@Param('id') id: string, @Body() dto: WithdrawDto) {
-    return this.walletService.withdraw(id, dto);
+  async withdraw(@Param('id') id: string, @Body() dto: WithdrawDto) {
+    const data = await this.walletService.withdraw(id, dto);
+    return sendSuccess(data, 'Withdrawal successful');
+  }
+
+  @Post('transfer')
+  @ApiOperation({ summary: 'Transfer funds between wallets' })
+  async transfer(@Body() dto: TransferDto) {
+    const data = await this.walletService.transfer(dto);
+    return sendSuccess(data, 'Transfer successful');
   }
 }

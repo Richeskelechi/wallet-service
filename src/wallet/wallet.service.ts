@@ -7,6 +7,7 @@ import { Transaction } from './entities/transaction.entity';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { DepositDto } from './dto/deposit.dto';
 import { WithdrawDto } from './dto/withdraw.dto';
+import { TransferDto } from './dto/transfer.dto';
 import { RedisCacheService } from '../cache/cache.service';
 
 @Injectable()
@@ -16,25 +17,40 @@ export class WalletService {
     @InjectRepository(Transaction) private txnRepo: Repository<Transaction>,
     private readonly dataSource: DataSource,
     private readonly cache: RedisCacheService
-  ) {}
+  ) { }
 
   async createWallet(dto: CreateWalletDto) {
     const existing = await this.walletRepo.findOne({ where: { email: dto.email } });
     if (existing) {
       throw new BadRequestException('Wallet with this email already exists');
     }
-  
-    const wallet = this.walletRepo.create({
-      fullname: dto.fullname,
-      email: dto.email,
-      balance: dto.balance ?? 0,
+
+    return this.dataSource.transaction(async (manager) => {
+      const wallet = manager.create(Wallet, {
+        fullname: dto.fullname,
+        email: dto.email,
+        balance: dto.balance ?? 0,
+      });
+
+      await manager.save(wallet);
+
+      // If balance is provided and > 0, create initial transaction
+      if (dto.balance && dto.balance > 0) {
+        const txn = manager.create(Transaction, {
+          id: uuidv4(),
+          walletId: wallet.id,
+          type: 'deposit',
+          amount: dto.balance,
+          status: 'completed',
+        });
+        await manager.save(txn);
+      }
+
+      await this.cache.set(`wallet:${wallet.id}`, { balance: wallet.balance });
+
+      return wallet;
     });
-  
-    await this.walletRepo.save(wallet);
-    await this.cache.set(`wallet:${wallet.id}`, { balance: wallet.balance });
-  
-    return wallet;
-  }  
+  }
 
   async deposit(walletId: string, dto: DepositDto) {
     return this.dataSource.transaction(async (manager) => {
@@ -86,6 +102,74 @@ export class WalletService {
 
       await this.cache.set(`wallet:${wallet.id}`, { balance: wallet.balance });
       return wallet;
+    });
+  }
+
+  async transfer(dto: TransferDto) {
+    const { senderId, receiverId, amount } = dto;
+
+    if (senderId === receiverId) {
+      throw new BadRequestException('Cannot transfer to the same wallet');
+    }
+
+    return this.dataSource.transaction(async (manager) => {
+      // Lock sender and receiver wallets for update
+      const sender = await manager.findOne(Wallet, {
+        where: { id: senderId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      const receiver = await manager.findOne(Wallet, {
+        where: { id: receiverId },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (!sender) throw new NotFoundException('Sender wallet not found');
+      if (!receiver) throw new NotFoundException('Receiver wallet not found');
+
+      // Convert balances to numbers before arithmetic
+      const senderBalanceNum = Number(sender.balance);
+      const receiverBalanceNum = Number(receiver.balance);
+
+      if (senderBalanceNum < amount) throw new BadRequestException('Insufficient funds');
+
+      // Update balances using numbers
+      sender.balance = senderBalanceNum - amount;
+      receiver.balance = receiverBalanceNum + amount;
+
+      await manager.save(sender);
+      await manager.save(receiver);
+
+      // Create debit transaction for sender
+      const senderTxn = manager.create(Transaction, {
+        id: uuidv4(),
+        walletId: sender.id,
+        type: 'transfer',
+        amount,
+        status: 'completed',
+        metadata: { direction: 'debit', to: receiver.id },
+      });
+      await manager.save(senderTxn);
+
+      // Create credit transaction for receiver
+      const receiverTxn = manager.create(Transaction, {
+        id: uuidv4(),
+        walletId: receiver.id,
+        type: 'transfer',
+        amount,
+        status: 'completed',
+        metadata: { direction: 'credit', from: sender.id },
+      });
+      await manager.save(receiverTxn);
+
+      // Update cache
+      await this.cache.set(`wallet:${sender.id}`, { balance: sender.balance });
+      await this.cache.set(`wallet:${receiver.id}`, { balance: receiver.balance });
+
+      return {
+        message: 'Transfer successful',
+        senderBalance: sender.balance,
+        receiverBalance: receiver.balance,
+      };
     });
   }
 }
