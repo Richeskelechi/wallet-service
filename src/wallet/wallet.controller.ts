@@ -1,10 +1,11 @@
-import { Controller, Post, Body, Param, Get } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiParam } from '@nestjs/swagger';
+import { Controller, Post, Body, Param, Get, Query } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { WalletService } from './wallet.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { DepositDto } from './dto/deposit.dto';
 import { WithdrawDto } from './dto/withdraw.dto';
 import { TransferDto } from './dto/transfer.dto';
+import { PaginationDto } from './dto/pagination.dto';
 import { sendSuccess } from '../utils/helpers/response.helpers';
 
 @ApiTags('wallets')
@@ -51,5 +52,19 @@ export class WalletController {
   async transfer(@Body() dto: TransferDto) {
     const data = await this.walletService.transfer(dto);
     return sendSuccess(data, 'Transfer successful');
+  }
+
+  @Get(':id/transactions')
+  @ApiOperation({ summary: 'Get paginated transaction history for a wallet' })
+  @ApiParam({ name: 'id', description: 'Wallet ID', type: 'string' })
+  @ApiQuery({ name: 'page', required: false, type: Number, example: 1 })
+  @ApiQuery({ name: 'limit', required: false, type: Number, example: 10 })
+  @ApiQuery({ name: 'type', required: false, enum: ['deposit', 'withdraw', 'transfer'], description: 'Filter transactions by type' })
+  async getTransactions(
+    @Param('id') id: string,
+    @Query() pagination: PaginationDto,
+  ) {
+    const result = await this.walletService.getTransactions(id, pagination);
+    return sendSuccess(result, 'Transactions fetched successfully');
   }
 }

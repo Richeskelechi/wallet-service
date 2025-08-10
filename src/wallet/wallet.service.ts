@@ -8,6 +8,7 @@ import { CreateWalletDto } from './dto/create-wallet.dto';
 import { DepositDto } from './dto/deposit.dto';
 import { WithdrawDto } from './dto/withdraw.dto';
 import { TransferDto } from './dto/transfer.dto';
+import { PaginationDto } from './dto/pagination.dto';
 import { RedisCacheService } from '../cache/cache.service';
 
 @Injectable()
@@ -191,4 +192,39 @@ export class WalletService {
       };
     });
   }
+
+  async getTransactions(walletId: string, pagination: PaginationDto) {
+    const { page = 1, limit = 10, type } = pagination;
+  
+    const where: any = { walletId };
+    if (type) {
+      where.type = type;
+    }
+  
+    const [transactions, total] = await this.txnRepo.findAndCount({
+      where,
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+  
+    return {
+      transaction: transactions.map(txn => ({
+        id: txn.id,
+        amount: txn.amount,
+        timestamp: txn.createdAt,
+        status: txn.status,
+        type: txn.type,
+        metadata: txn.metadata,
+      })),
+      pagination: {
+        totalItems: total,
+        itemCount: transactions.length,
+        itemsPerPage: limit,
+        totalPages: Math.ceil(total / limit),
+        currentPage: page,
+      },
+    };
+  }
+  
 }
