@@ -3,15 +3,18 @@ import { Redis } from 'ioredis';
 
 @Injectable()
 export class RedisCacheService {
-  constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {}
+  private readonly defaultTtlSeconds: number;
+
+  constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {
+    // Read default TTL (in seconds) from env or fallback to 3600 (1 hour)
+    this.defaultTtlSeconds = Number(process.env.REDIS_CACHE_TTL) || 3600;
+  }
 
   async set(key: string, value: any, ttlSeconds?: number) {
     const val = JSON.stringify(value);
-    if (ttlSeconds) {
-      await this.redis.set(key, val, 'EX', ttlSeconds);
-    } else {
-      await this.redis.set(key, val);
-    }
+    const ttl = ttlSeconds ?? this.defaultTtlSeconds;
+
+    await this.redis.set(key, val, 'EX', ttl);
   }
 
   async get<T>(key: string): Promise<T | null> {

@@ -52,6 +52,25 @@ export class WalletService {
     });
   }
 
+  async getBalance(walletId: string): Promise<{ walletId: string; balance: number }> {
+    // Try to get from cache first
+    const cached = await this.cache.get<{ balance: number }>(`wallet:${walletId}`);
+    if (cached) {
+      return { walletId, balance: cached.balance };
+    }
+  
+    // If not in cache, fetch from DB
+    const wallet = await this.walletRepo.findOne({ where: { id: walletId } });
+    if (!wallet) {
+      throw new NotFoundException('Wallet not found');
+    }
+  
+    // Update cache with fresh balance
+    await this.cache.set(`wallet:${walletId}`, { balance: wallet.balance });
+  
+    return { walletId, balance: wallet.balance };
+  }  
+
   async deposit(walletId: string, dto: DepositDto) {
     return this.dataSource.transaction(async (manager) => {
       const wallet = await manager.findOne(Wallet, {
