@@ -54,22 +54,55 @@ export class WalletService {
   }
 
   async getBalance(walletId: string): Promise<{ walletId: string; balance: number }> {
+    const cacheKey = `wallet:${walletId}`;
+    const lockKey = `lock:${cacheKey}`;
+    const lockTtlSeconds = 10; // e.g., 10 seconds lock TTL
+  
     // Try to get from cache first
-    const cached = await this.cache.get<{ balance: number }>(`wallet:${walletId}`);
+    const cached = await this.cache.get<{ balance: number }>(cacheKey);
     if (cached) {
       return { walletId, balance: cached.balance };
     }
   
-    // If not in cache, fetch from DB
-    const wallet = await this.walletRepo.findOne({ where: { id: walletId } });
-    if (!wallet) {
-      throw new NotFoundException('Wallet not found');
+    // Try to acquire lock to prevent stampede
+    const lockAcquired = await this.cache.acquireLock(lockKey, lockTtlSeconds);
+  
+    if (lockAcquired) {
+      try {
+        // Only this process fetches from DB & updates cache
+        const wallet = await this.walletRepo.findOne({ where: { id: walletId } });
+        if (!wallet) {
+          throw new NotFoundException('Wallet not found');
+        }
+  
+        // Update cache with fresh balance
+        await this.cache.set(cacheKey, { balance: wallet.balance });
+  
+        return { walletId, balance: wallet.balance };
+      } finally {
+        // Release lock (optional, TTL will expire anyway)
+        await this.cache.releaseLock(lockKey);
+      }
+    } else {
+      // Someone else is loading cache, wait and retry
+  
+      // Simple retry logic - wait 100ms, then try get from cache again
+      await new Promise(resolve => setTimeout(resolve, 100));
+  
+      const cachedRetry = await this.cache.get<{ balance: number }>(cacheKey);
+      if (cachedRetry) {
+        return { walletId, balance: cachedRetry.balance };
+      }
+  
+      // As fallback, fetch directly from DB (to avoid endless waiting)
+      const wallet = await this.walletRepo.findOne({ where: { id: walletId } });
+      if (!wallet) {
+        throw new NotFoundException('Wallet not found');
+      }
+      // Update cache
+      await this.cache.set(cacheKey, { balance: wallet.balance });
+      return { walletId, balance: wallet.balance };
     }
-  
-    // Update cache with fresh balance
-    await this.cache.set(`wallet:${walletId}`, { balance: wallet.balance });
-  
-    return { walletId, balance: wallet.balance };
   }  
 
   async deposit(walletId: string, dto: DepositDto) {
@@ -81,7 +114,9 @@ export class WalletService {
 
       if (!wallet) throw new NotFoundException('Wallet not found');
 
-      wallet.balance += dto.amount;
+      const walletBalance = Number(wallet.balance);
+
+      wallet.balance = walletBalance + dto.amount;
       await manager.save(wallet);
 
       const txn = this.txnRepo.create({
@@ -93,7 +128,8 @@ export class WalletService {
       });
       await manager.save(txn);
 
-      await this.cache.set(`wallet:${wallet.id}`, { balance: wallet.balance });
+      // Invalidate wallet caches
+      await this.invalidateWalletCaches(walletId)
       return wallet;
     });
   }
@@ -120,7 +156,8 @@ export class WalletService {
       });
       await manager.save(txn);
 
-      await this.cache.set(`wallet:${wallet.id}`, { balance: wallet.balance });
+      // Invalidate wallet caches
+      await this.invalidateWalletCaches(walletId)
       return wallet;
     });
   }
@@ -181,9 +218,9 @@ export class WalletService {
       });
       await manager.save(receiverTxn);
 
-      // Update cache
-      await this.cache.set(`wallet:${sender.id}`, { balance: sender.balance });
-      await this.cache.set(`wallet:${receiver.id}`, { balance: receiver.balance });
+      // Invalidate wallet caches
+      await this.invalidateWalletCaches(sender.id)
+      await this.invalidateWalletCaches(receiver.id)
 
       return {
         message: 'Transfer successful',
@@ -195,20 +232,22 @@ export class WalletService {
 
   async getTransactions(walletId: string, pagination: PaginationDto) {
     const { page = 1, limit = 10, type } = pagination;
-  
+    const cacheKey = `transactions:${walletId}:page:${page}:limit:${limit}:type:${type || 'all'}`;
+
+    const cached = await this.cache.get<any>(cacheKey);
+    if (cached) return cached;
+
     const where: any = { walletId };
-    if (type) {
-      where.type = type;
-    }
-  
+    if (type) where.type = type;
+
     const [transactions, total] = await this.txnRepo.findAndCount({
       where,
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
     });
-  
-    return {
+
+    const result = {
       transaction: transactions.map(txn => ({
         id: txn.id,
         amount: txn.amount,
@@ -225,6 +264,21 @@ export class WalletService {
         currentPage: page,
       },
     };
+
+    // Set cache TTL from env or default 300 seconds
+    const CACHE_TTL = Number(process.env.REDIS_CACHE_TTL) || 3600;
+    await this.cache.set(cacheKey, result, CACHE_TTL);
+
+    return result;
+  }
+
+  async invalidateTransactionCache(walletId: string) {
+    await this.cache.delByPattern(`transactions:${walletId}:*`);
+  }
+
+  async invalidateWalletCaches(walletId: string) {
+    await this.invalidateTransactionCache(walletId);
+    await this.cache.del(`wallet:${walletId}`);
   }
   
 }
